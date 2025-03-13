@@ -1,4 +1,4 @@
-import IORedis from 'ioredis'
+import { Redis, Cluster } from 'ioredis'
 
 /**
  * Consumer Options
@@ -7,7 +7,7 @@ export interface ConsumerOptions {
   /**
    * IORedis Client
    */
-  redisClient: IORedis.Redis
+  redisClient: Redis | Cluster
   /**
    * Name of the consumer instance
    */
