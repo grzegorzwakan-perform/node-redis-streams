@@ -1,5 +1,7 @@
 # node-redis-streams <!-- omit in toc -->
 
+original archived [repository](https://github.com/danthegoodman1/node-redis-streams)
+
 Redis Streams Package for Node.js/Typescript with full consumer group recovery
 
 The goal of this package to bring many Kafka (and `kafkajs`) like features to Redis Streams.
@@ -63,7 +65,7 @@ const streamConsumer = new nrs.Consumer({
   blockIntervalMS: 1000,
   checkAbandonedMS: 2000
 })
-time.StartConsuming()
+streamConsumer.StartConsuming()
 ```
 
 Diving into the package, we can see how the previous configuration applies to the Redis command:
@@ -158,7 +160,7 @@ const streamConsumer = new nrs.Consumer({
   blockIntervalMS: 1000,
   checkAbandonedMS: 2000
 })
-time.StartConsuming()
+streamConsumer.StartConsuming()
 ```
 
 #### redisClient
