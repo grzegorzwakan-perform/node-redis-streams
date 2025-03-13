@@ -1,4 +1,4 @@
-import IORedis from "ioredis"
+import { Redis, Cluster } from 'ioredis'
 
 import { ConsumerOptions, StreamRecord } from './types/main'
 
@@ -7,7 +7,7 @@ export default class consumer {
   exitLoop = false
   abandonLock = false
   checkAbandonedMS: number
-  redisClient: IORedis.Redis
+  redisClient: Redis | Cluster
   consumerName: string
   groupName: string
   readItems: number
@@ -48,7 +48,7 @@ export default class consumer {
 
   async ackIDs (ids: string[]) {
     if (ids.length === 0) return
-    await this.redisClient.xack(this.streamName, this.groupName, ...ids)
+    return await this.redisClient.xack(this.streamName, this.groupName, ...ids)
   }
 
   async ackID (id: any) {
@@ -58,8 +58,19 @@ export default class consumer {
   async readGroup () {
     this.readLock = true
     try {
-      const stream = await this.redisClient.xreadgroup('GROUP', this.groupName, this.consumerName, 'COUNT', this.readItems, 'BLOCK', this.blockIntervalMS, 'STREAMS', this.streamName, '>')
-      if (stream !== null && stream.length > 0) {
+      const stream = await this.redisClient.xreadgroup(
+        'GROUP',
+        this.groupName,
+        this.consumerName,
+        'COUNT',
+        this.readItems,
+        'BLOCK',
+        this.blockIntervalMS,
+        'STREAMS',
+        this.streamName,
+        '>'
+      )
+      if (stream !== null && stream.length > 0 && Array.isArray(stream[0]) && Array.isArray(stream[0][1])) {
         const items = stream[0][1]
         const ids = []
         let handledError = false
@@ -70,18 +81,18 @@ export default class consumer {
         if (this.recordHandler) {
           for (const record of builtItems) {
             try {
-                await this.recordHandler(record)
-                ids.push(record.recordID)
-              } catch (error) { // One of the items caused an error, ack everything we have and exit
-                handledError = true
-                await this.ackIDs(ids)
-                if (this.errorHandler) {
-                  await this.errorHandler(record, error)
-                }
-                break
+              await this.recordHandler(record)
+              ids.push(record.recordID)
+            } catch (error) { // One of the items caused an error, ack everything we have and exit
+              handledError = true
+              await this.ackIDs(ids)
+              if (this.errorHandler) {
+                await this.errorHandler(record, error)
               }
+              break
             }
           }
+        }
         if (!handledError) { // If we didn't exit from an error, ack the ids
           await this.ackIDs(ids)
         }
@@ -105,47 +116,59 @@ export default class consumer {
       const stream = await this.redisClient.xpending(this.streamName, this.groupName, '-', '+', this.readItems)
       if (stream !== null && stream.length > 0) {
         const recoveryConsumers: any = {} // consumerName: ['ids']
-        await Promise.all(stream.map(async (record: any[]) => {
-          const id = record[0]
-          const consumer = record[1]
-          const idleTime: number = record[2]
-          const deliveryAttempts = record[3] // we may want to use this later for a DLQ (or DLS I guess)
-          if (idleTime > this.checkAbandonedMS) {
-            if (!recoveryConsumers[consumer]) {
-              recoveryConsumers[consumer] = []
-            }
-            recoveryConsumers[consumer].push(id)
-          }
-        }))
-        await Promise.all(Object.keys(recoveryConsumers).map(async (consumer) => {
-          const claimed = await this.redisClient.xclaim(this.streamName, this.groupName, consumer, this.checkAbandonedMS, ...recoveryConsumers[consumer])
-          if (claimed !== null && claimed.length > 0) {
-            const ids = []
-            let handledError = false
-            const builtItems = claimed.map((item) => this.buildKVPairs(item, true))
-            if (this.batchHandler) {
-              await this.batchHandler(builtItems)
-            }
-            if (this.recordHandler) {
-              for (const record of builtItems) {
-                try {
-                  await this.recordHandler(record)
-                  ids.push(record.recordID)
-                } catch (error) { // One of the items caused an error, ack everything we have and exit
-                  handledError = true
-                  await this.ackIDs(ids)
-                  if (this.errorHandler) {
-                    await this.errorHandler(record, error)
-                  }
-                  break
+        await Promise.all(
+          stream.map(async (record) => {
+            if (Array.isArray(record)) {
+              const id: string = record[0]
+              const consumer: string = record[1]
+              const idleTime: number = record[2]
+              const deliveryAttempts: number = record[3] // we may want to use this later for a DLQ (or DLS I guess)
+              if (idleTime > this.checkAbandonedMS) {
+                if (!recoveryConsumers[consumer]) {
+                  recoveryConsumers[consumer] = []
                 }
+                recoveryConsumers[consumer].push(id)
               }
             }
-            if (!handledError) { // If we didn't exit from an error, ack the ids
-              await this.ackIDs(ids)
+          })
+        )
+        await Promise.all(
+          Object.keys(recoveryConsumers).map(async (consumer) => {
+            const claimed = await this.redisClient.xclaim(
+              this.streamName,
+              this.groupName,
+              consumer,
+              this.checkAbandonedMS,
+              ...recoveryConsumers[consumer]
+            )
+            if (claimed !== null && claimed.length > 0) {
+              const ids = []
+              let handledError = false
+              const builtItems = claimed.map((item) => this.buildKVPairs(item, true))
+              if (this.batchHandler) {
+                await this.batchHandler(builtItems)
+              }
+              if (this.recordHandler) {
+                for (const record of builtItems) {
+                  try {
+                    await this.recordHandler(record)
+                    ids.push(record.recordID)
+                  } catch (error) { // One of the items caused an error, ack everything we have and exit
+                    handledError = true
+                    await this.ackIDs(ids)
+                    if (this.errorHandler) {
+                      await this.errorHandler(record, error)
+                    }
+                    break
+                  }
+                }
+              }
+              if (!handledError) { // If we didn't exit from an error, ack the ids
+                await this.ackIDs(ids)
+              }
             }
-          }
-        }))
+          })
+        )
         this.abandonLock = false
       } else {
         this.abandonLock = false
